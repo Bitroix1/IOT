@@ -1,0 +1,368 @@
+<!--
+  ==========================================================================
+   BUZZER SYSTEM — WEB MONITOR  (the "monitor" component)
+  ==========================================================================
+   Open this file in Chrome or Edge (desktop). Web Serial is not in Firefox
+   or Safari. Click "Connect gateway" and pick the ESP32's serial port.
+
+   If "Connect gateway" does nothing / is blocked when opened as a file,
+   serve the folder over localhost instead:
+       python3 -m http.server 8000
+   then open  http://localhost:8000/monitor.html
+
+   The board talks to the gateway/master sketch over USB at 115200 baud using
+   the plain-text protocol documented in gateway.ino. The gateway relays
+   commands to the buzzers over painlessMesh.
+  ==========================================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Buzzer Dispatch</title>
+<style>
+  :root {
+    --bg:        #14171c;
+    --panel:     #1b1f26;
+    --panel-2:   #20252e;
+    --line:      #2c323c;
+    --ink:       #e8eaed;
+    --muted:     #8b93a0;
+    --idle:      #3a414c;
+    --amber:     #e0a93b;
+    --green:     #36c08a;
+    --red:       #e2664f;
+    --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--sans); -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---- top bar ---- */
+  header {
+    display: flex; align-items: center; gap: 16px;
+    padding: 14px 22px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, var(--panel-2), var(--panel));
+    position: sticky; top: 0; z-index: 10;
+  }
+  .brand { font-weight: 700; letter-spacing: .14em; font-size: 13px; text-transform: uppercase; }
+  .brand span { color: var(--green); }
+  .status {
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--idle); }
+  .dot.ok  { background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .dot.err { background: var(--red); }
+  .spacer { flex: 1; }
+  button {
+    font-family: var(--sans); font-size: 13px; font-weight: 600;
+    color: var(--ink); background: var(--panel-2);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 14px; cursor: pointer; transition: border-color .15s, background .15s;
+  }
+  button:hover { border-color: var(--green); }
+  button.primary { background: var(--green); color: #06140e; border-color: var(--green); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .addbox { display: flex; gap: 6px; align-items: center; }
+  .addbox input {
+    width: 56px; background: var(--bg); border: 1px solid var(--line);
+    color: var(--ink); border-radius: 8px; padding: 7px 9px; font-family: var(--mono);
+  }
+
+  /* ---- the dock ---- */
+  main { padding: 26px 22px 200px; }
+  .empty {
+    color: var(--muted); text-align: center; margin-top: 80px; font-size: 14px; line-height: 1.6;
+  }
+  .grid {
+    display: grid; gap: 18px;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  }
+
+  .puck {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 16px 16px 14px;
+    position: relative; overflow: hidden;
+  }
+  /* the glowing edge encodes the buzzer's state */
+  .puck::before {
+    content: ""; position: absolute; inset: 0 auto 0 0; width: 5px;
+    background: var(--idle); transition: background .2s, box-shadow .2s;
+  }
+  .puck.assigned::before { background: var(--amber); box-shadow: 0 0 14px var(--amber); }
+  .puck.calling::before  { background: var(--green); box-shadow: 0 0 16px var(--green); }
+  .puck.calling { animation: pulse 1.3s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{ border-color: var(--line);} 50%{ border-color: var(--green);} }
+  @media (prefers-reduced-motion: reduce) { .puck.calling { animation: none; } }
+
+  .puck.offline { opacity: .55; }
+  .puck-top { display: flex; align-items: baseline; justify-content: space-between; }
+  .pid { font-family: var(--mono); font-size: 26px; font-weight: 700; }
+  .pid small { color: var(--muted); font-size: 12px; font-weight: 500; }
+  .state {
+    font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em;
+  }
+  .state.idle     { color: var(--muted); }
+  .state.assigned { color: var(--amber); }
+  .state.calling  { color: var(--green); }
+
+  .meta { margin: 10px 0 14px; font-family: var(--mono); font-size: 12px; color: var(--muted); min-height: 34px; }
+  .meta div { margin: 2px 0; }
+  .meta b { color: var(--ink); font-weight: 600; }
+
+  .acts { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+  .acts button { padding: 7px 0; font-size: 12.5px; }
+
+  /* ---- log drawer ---- */
+  .logwrap {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: var(--panel); border-top: 1px solid var(--line);
+  }
+  .logbar {
+    display: flex; align-items: center; gap: 12px; padding: 8px 18px;
+    font-family: var(--mono); font-size: 12px; color: var(--muted); cursor: pointer;
+  }
+  .log {
+    height: 0; overflow: auto; transition: height .18s;
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.7;
+    padding: 0 18px; color: var(--muted);
+  }
+  .log.open { height: 150px; padding: 6px 18px 12px; }
+  .log .tx { color: var(--green); }
+  .log .rx { color: var(--ink); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">Buzzer&nbsp;<span>Dispatch</span></div>
+  <div class="status"><span id="dot" class="dot"></span><span id="statusText">Not connected</span></div>
+  <div class="spacer"></div>
+  <div class="addbox">
+    <input id="addId" type="number" min="1" max="31" placeholder="#" />
+    <button id="addBtn">Add buzzer</button>
+  </div>
+  <button id="connectBtn" class="primary">Connect gateway</button>
+</header>
+
+<main>
+  <div id="empty" class="empty">
+    No buzzers yet.<br />
+    Connect the gateway, then power on a buzzer — it announces itself and appears here.<br />
+    (Or add one manually to lay out the board in advance.)
+  </div>
+  <div id="grid" class="grid"></div>
+</main>
+
+<div class="logwrap">
+  <div class="logbar" id="logToggle">▸ Serial log <span id="logCount"></span></div>
+  <div id="log" class="log"></div>
+</div>
+
+<script>
+// ---------- state ----------
+const board = {};          // id -> { id, state, mac, assignedAt, calledAt, lastButton, lastSeen }
+let port, reader, writer, keepReading = false, rxBuf = "";
+
+const $ = (id) => document.getElementById(id);
+
+// ---------- connection ----------
+async function toggleConnect() {
+  if (port) { await disconnect(); return; }
+  if (!("serial" in navigator)) {
+    setStatus("This browser has no Web Serial — use Chrome or Edge.", "err");
+    return;
+  }
+  try {
+    port = await navigator.serial.requestPort();
+    await port.open({ baudRate: 115200 });
+    writer = port.writable.getWriter();
+    keepReading = true;
+    setStatus("Connected", "ok");
+    $("connectBtn").textContent = "Disconnect";
+    readLoop();
+  } catch (e) {
+    port = null;
+    setStatus("Connection cancelled", "err");
+  }
+}
+
+async function disconnect() {
+  keepReading = false;
+  try { await reader?.cancel(); } catch (e) {}
+  try { writer?.releaseLock(); } catch (e) {}
+  try { await port?.close(); } catch (e) {}
+  port = writer = reader = null;
+  setStatus("Disconnected", "");
+  $("connectBtn").textContent = "Connect gateway";
+}
+
+async function readLoop() {
+  const dec = new TextDecoder();
+  reader = port.readable.getReader();
+  try {
+    while (keepReading) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      rxBuf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = rxBuf.indexOf("\n")) >= 0) {
+        const ln = rxBuf.slice(0, nl).trim();
+        rxBuf = rxBuf.slice(nl + 1);
+        if (ln) handleLine(ln);
+      }
+    }
+  } catch (e) {
+    log("read error: " + e.message);
+  } finally {
+    try { reader.releaseLock(); } catch (e) {}
+  }
+}
+
+async function send(text) {
+  if (!writer) { setStatus("Not connected", "err"); return; }
+  log(text, "tx");
+  await writer.write(new TextEncoder().encode(text + "\n"));
+}
+
+// ---------- protocol in ----------
+function handleLine(ln) {
+  const p = ln.split(",");
+  const tag = p[0];
+  const id = parseInt(p[1], 10);
+
+  if (tag === "ONLINE") {
+    const isNew = !board[id];
+    ensure(id);
+    board[id].node = p[2];
+    board[id].lastSeen = Date.now();
+    if (isNew) log(ln, "rx");
+  } else if (tag === "ACK") {
+    ensure(id); board[id].lastSeen = Date.now(); log(ln, "rx");
+  } else if (tag === "BUTTON") {
+    ensure(id);
+    board[id].lastSeen = Date.now();
+    board[id].lastButton = Date.now();
+    // pressing during a call = customer collected the order -> back to idle
+    if (board[id].state === "calling") setState(id, "idle");
+    log(ln, "rx");
+  } else {
+    log(ln, "rx");   // DELIVERY / LOG / anything else
+  }
+  render();
+}
+
+// ---------- protocol out ----------
+function assign(id)   { setState(id, "assigned"); send("ASSIGN," + id); }
+function ready(id)    { setState(id, "calling");  send("READY," + id); }
+function question(id) { send("QUESTION," + id); }
+function clear(id)    { setState(id, "idle");     send("CLEAR," + id); }
+
+// ---------- board helpers ----------
+function ensure(id) {
+  if (!board[id]) board[id] = { id, state: "idle", node: "", assignedAt: 0, calledAt: 0, lastButton: 0, lastSeen: 0 };
+}
+function setState(id, state) {
+  ensure(id);
+  const b = board[id];
+  b.state = state;
+  if (state === "assigned") { b.assignedAt = Date.now(); b.calledAt = 0; }
+  if (state === "calling")  { b.calledAt = Date.now(); }
+  if (state === "idle")     { b.assignedAt = 0; b.calledAt = 0; }
+  render();
+}
+
+function fmtAgo(ts) {
+  if (!ts) return "—";
+  let s = Math.floor((Date.now() - ts) / 1000);
+  const m = Math.floor(s / 60); s %= 60;
+  return (m ? m + "m " : "") + s + "s";
+}
+function fmtClock(ts) {
+  if (!ts) return "—";
+  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+const STATE_LABEL = { idle: "Idle", assigned: "With customer", calling: "Order ready" };
+
+// ---------- render ----------
+function render() {
+  const ids = Object.keys(board).map(Number).sort((a, b) => a - b);
+  $("empty").style.display = ids.length ? "none" : "block";
+  const grid = $("grid");
+  grid.innerHTML = "";
+
+  ids.forEach((id) => {
+    const b = board[id];
+    const offline = b.lastSeen && (Date.now() - b.lastSeen > 30000);
+
+    const card = document.createElement("div");
+    card.className = "puck " + b.state + (offline ? " offline" : "");
+
+    let meta = "";
+    if (b.state === "assigned") meta += `<div>with customer <b>${fmtAgo(b.assignedAt)}</b></div>`;
+    if (b.state === "calling")  meta += `<div>calling since <b>${fmtAgo(b.calledAt)}</b> (${fmtClock(b.calledAt)})</div>`;
+    if (b.lastButton)           meta += `<div>last press <b>${fmtClock(b.lastButton)}</b></div>`;
+    if (offline)                meta += `<div style="color:var(--red)">offline</div>`;
+    if (!meta)                  meta = `<div>ready to assign</div>`;
+
+    card.innerHTML = `
+      <div class="puck-top">
+        <div class="pid">#${id} <small>${b.node ? "node " + b.node.slice(-4) : ""}</small></div>
+        <div class="state ${b.state}">${STATE_LABEL[b.state]}</div>
+      </div>
+      <div class="meta">${meta}</div>
+      <div class="acts">
+        <button data-act="assign"   data-id="${id}">Assign</button>
+        <button data-act="ready"    data-id="${id}">Order ready</button>
+        <button data-act="question" data-id="${id}">Question</button>
+        <button data-act="clear"    data-id="${id}">Clear</button>
+      </div>`;
+    grid.appendChild(card);
+  });
+
+  grid.querySelectorAll("button").forEach((btn) => {
+    btn.onclick = () => {
+      const id = parseInt(btn.dataset.id, 10);
+      ({ assign, ready, question, clear })[btn.dataset.act](id);
+    };
+  });
+}
+
+// ---------- ui chrome ----------
+function setStatus(text, kind) {
+  $("statusText").textContent = text;
+  $("dot").className = "dot " + (kind || "");
+}
+let logLines = 0;
+function log(text, kind) {
+  const el = document.createElement("div");
+  el.className = kind || "";
+  const arrow = kind === "tx" ? "→ " : kind === "rx" ? "← " : "  ";
+  el.textContent = new Date().toLocaleTimeString() + "  " + arrow + text;
+  $("log").appendChild(el);
+  $("log").scrollTop = $("log").scrollHeight;
+  $("logCount").textContent = "(" + (++logLines) + ")";
+}
+
+$("connectBtn").onclick = toggleConnect;
+$("addBtn").onclick = () => {
+  const v = parseInt($("addId").value, 10);
+  if (v >= 1 && v <= 31) { ensure(v); render(); $("addId").value = ""; }
+};
+$("logToggle").onclick = () => {
+  const open = $("log").classList.toggle("open");
+  $("logToggle").firstChild.textContent = (open ? "▾" : "▸") + " Serial log ";
+};
+
+// live timers / offline detection
+setInterval(render, 1000);
+render();
+</script>
+</body>
+</html>
