@@ -17,8 +17,13 @@ const unsigned long loadingDelay = 2000;
 unsigned long loadingFrameStart = 0;
 uint8_t loadingFrame = 0;
 const unsigned long loadingFrameDelay = 80;
+bool showingResultScreen = false;
+bool lastSubmissionCorrect = false;
+unsigned long resultStartTime = 0;
+const unsigned long resultDelay = 1000;
 
 int selectedBox = 0;
+int correctAnswerBox = 0;
 
 //default question and answers for failsafe
 String quizQuestion = "Which box is orange?";
@@ -29,12 +34,13 @@ String quizAnswers[4] = {
   "Blue"
 };
 
-void setQuizContent(const String &question, const String &answer1, const String &answer2, const String &answer3, const String &answer4) {
+void setQuizContent(const String &question, const String &answer1, const String &answer2, const String &answer3, const String &answer4, int correctAnswerIndex) {
   quizQuestion = question;
   quizAnswers[0] = answer1;
   quizAnswers[1] = answer2;
   quizAnswers[2] = answer3;
   quizAnswers[3] = answer4;
+  correctAnswerBox = constrain(correctAnswerIndex, 0, 3);
 }
 
 void drawSelectionBox(int16_t x, int16_t y, int16_t w, int16_t h) {
@@ -170,12 +176,46 @@ void drawLoadingScreen() {
   tft.drawString("Loading...", centerX, centerY + 92);
 }
 
+void drawResultScreen(bool isCorrect) {
+  const uint16_t background = isCorrect ? TFT_GREEN : TFT_RED;
+
+  tft.fillScreen(background);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(TFT_WHITE, background);
+
+  const int16_t centerX = tft.width() / 2;
+  const int16_t centerY = tft.height() / 2;
+  const int16_t markSize = 28;
+  const int16_t lineWidth = 6;
+
+  if (isCorrect) {
+    for (int16_t i = 0; i < lineWidth; i++) {
+      tft.drawLine(centerX - 22, centerY + 6 + i, centerX - 2, centerY + 24 + i, TFT_WHITE);
+      tft.drawLine(centerX - 2, centerY + 24 + i, centerX + 26, centerY - 14 + i, TFT_WHITE);
+    }
+  } else {
+    for (int16_t i = 0; i < lineWidth; i++) {
+      tft.drawLine(centerX - markSize, centerY - markSize + i, centerX + markSize, centerY + markSize + i, TFT_WHITE);
+      tft.drawLine(centerX - markSize, centerY + markSize + i, centerX + markSize, centerY - markSize + i, TFT_WHITE);
+    }
+  }
+}
+
 void startLoadingScreen() {
   showingLoadingScreen = true;
+  showingResultScreen = false;
   loadingStartTime = millis();
   loadingFrameStart = 0;
   loadingFrame = 0;
   drawLoadingScreen();
+}
+
+void startResultScreen(bool isCorrect) {
+  showingResultScreen = true;
+  showingLoadingScreen = false;
+  lastSubmissionCorrect = isCorrect;
+  resultStartTime = millis();
+  drawResultScreen(isCorrect);
 }
 
 void setup() {
@@ -184,11 +224,19 @@ void setup() {
 
   Serial.begin(115200);
   pinMode(buttonPin, INPUT_PULLUP);
-  setQuizContent("When was Israel\nfounded?", "1948", "2007", "1969", "1939");
+  setQuizContent("When was Israel\nfounded?", "1948", "2007", "1969", "1939", 0);
   drawKahootScreen();
 }
 
 void loop() {
+  if (showingResultScreen) {
+    if (millis() - resultStartTime >= resultDelay) {
+      showingResultScreen = false;
+      startLoadingScreen();
+    }
+    return;
+  }
+
   if (showingLoadingScreen) {
     if (millis() - loadingFrameStart >= loadingFrameDelay) {
       loadingFrameStart = millis();
@@ -237,7 +285,7 @@ void loop() {
       Serial.print(selectedBox + 1);
       Serial.println(" submitted");
 
-      startLoadingScreen();
+      startResultScreen(selectedBox == correctAnswerBox);
     }
   }
 
