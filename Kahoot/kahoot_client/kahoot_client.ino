@@ -1,4 +1,16 @@
 #include <TFT_eSPI.h>
+#include "painlessMesh.h"
+
+// Mesh Credentials - Must match Master perfectly
+#define MESH_PREFIX     "MyESP32Mesh"
+#define MESH_PASSWORD   "MeshPassword123"
+#define MESH_PORT       5555
+
+painlessMesh mesh;
+Scheduler userScheduler;
+
+// Master's Node ID calculated from MAC EC:62:60:9C:08:84
+uint32_t masterNodeId = 1620838532; 
 
 TFT_eSPI tft = TFT_eSPI();
 
@@ -13,7 +25,6 @@ bool holdReported = false;
 const unsigned long holdDelay = 1000;
 bool showingLoadingScreen = false;
 unsigned long loadingStartTime = 0;
-const unsigned long loadingDelay = 2000;
 unsigned long loadingFrameStart = 0;
 uint8_t loadingFrame = 0;
 const unsigned long loadingFrameDelay = 80;
@@ -25,14 +36,23 @@ const unsigned long resultDelay = 1000;
 int selectedBox = 0;
 int correctAnswerBox = 0;
 
-//default question and answers for failsafe
-String quizQuestion = "Which box is orange?";
-String quizAnswers[4] = {
-  "Orange",
-  "Red",
-  "Green",
-  "Blue"
-};
+String quizQuestion = "Waiting for game...";
+String quizAnswers[4] = {"-", "-", "-", "-"};
+
+// Helper function to extract tokens from pipe-delimited mesh strings
+String getValue(String data, char separator, int index) {
+  int found = 0;
+  int strIndex[] = {0, -1};
+  int maxIndex = data.length() - 1;
+  for (int i = 0; i <= maxIndex && found <= index; i++) {
+    if (data.charAt(i) == separator || i == maxIndex) {
+      found++;
+      strIndex[0] = strIndex[1] + 1;
+      strIndex[1] = (i == maxIndex) ? i + 1 : i;
+    }
+  }
+  return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
+}
 
 void setQuizContent(const String &question, const String &answer1, const String &answer2, const String &answer3, const String &answer4, int correctAnswerIndex) {
   quizQuestion = question;
@@ -45,7 +65,6 @@ void setQuizContent(const String &question, const String &answer1, const String 
 
 void drawSelectionBox(int16_t x, int16_t y, int16_t w, int16_t h) {
   const int16_t border = 8;
-
   for (int16_t offset = 0; offset < border; offset++) {
     tft.drawRect(x + offset, y + offset, w - offset * 2, h - offset * 2, TFT_WHITE);
   }
@@ -60,11 +79,9 @@ void drawAnswerTile(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t fillCol
 
 void drawQuestionText(const String &questionText, int16_t x, int16_t y, int16_t width) {
   int newlineIndex = questionText.indexOf('\n');
-
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextSize(2);
-
   if (newlineIndex >= 0) {
     String line1 = questionText.substring(0, newlineIndex);
     String line2 = questionText.substring(newlineIndex + 1);
@@ -72,24 +89,6 @@ void drawQuestionText(const String &questionText, int16_t x, int16_t y, int16_t 
     tft.drawString(line2, x, y + 18);
   } else {
     tft.drawString(questionText, x, y + 9);
-  }
-}
-
-void drawKahootSymbol(int16_t cx, int16_t cy, int16_t size, uint16_t color, uint8_t symbol) {
-  switch (symbol) {
-    case 0:
-      tft.fillTriangle(cx, cy - size, cx - size, cy + size, cx + size, cy + size, color);
-      break;
-    case 1:
-      tft.fillTriangle(cx, cy - size, cx - size, cy, cx + size, cy, color);
-      tft.fillTriangle(cx, cy + size, cx - size, cy, cx + size, cy, color);
-      break;
-    case 2:
-      tft.fillCircle(cx, cy, size, color);
-      break;
-    case 3:
-      tft.fillRect(cx - size, cy - size, size * 2, size * 2, color);
-      break;
   }
 }
 
@@ -105,7 +104,6 @@ void drawKahootScreen() {
   const int16_t bottomHalfHeight = answersHeight - topHalfHeight;
 
   tft.fillScreen(TFT_BLACK);
-
   tft.fillRect(0, 0, screenWidth, questionBandHeight, TFT_BLACK);
   drawQuestionText(quizQuestion, 12, 8, screenWidth - 24);
 
@@ -115,18 +113,10 @@ void drawKahootScreen() {
   drawAnswerTile(halfWidth, answersTop + topHalfHeight, screenWidth - halfWidth, bottomHalfHeight, TFT_BLUE, quizAnswers[3]);
 
   switch (selectedBox) {
-    case 0:
-      drawSelectionBox(0, answersTop, halfWidth, topHalfHeight);
-      break;
-    case 1:
-      drawSelectionBox(halfWidth, answersTop, screenWidth - halfWidth, topHalfHeight);
-      break;
-    case 2:
-      drawSelectionBox(0, answersTop + topHalfHeight, halfWidth, bottomHalfHeight);
-      break;
-    case 3:
-      drawSelectionBox(halfWidth, answersTop + topHalfHeight, screenWidth - halfWidth, bottomHalfHeight);
-      break;
+    case 0: drawSelectionBox(0, answersTop, halfWidth, topHalfHeight); break;
+    case 1: drawSelectionBox(halfWidth, answersTop, screenWidth - halfWidth, topHalfHeight); break;
+    case 2: drawSelectionBox(0, answersTop + topHalfHeight, halfWidth, bottomHalfHeight); break;
+    case 3: drawSelectionBox(halfWidth, answersTop + topHalfHeight, screenWidth - halfWidth, bottomHalfHeight); break;
   }
 }
 
@@ -160,25 +150,18 @@ void drawLoadingScreen() {
     int8_t age = (int8_t)((loadingFrame + 8 - i) % 8);
     uint16_t color = trailColor3;
 
-    if (age == 0) {
-      color = TFT_WHITE;
-    } else if (age == 1) {
-      color = trailColor1;
-    } else if (age == 2) {
-      color = trailColor2;
-    } else if (age == 3) {
-      color = trailColor3;
-    }
+    if (age == 0) color = TFT_WHITE;
+    else if (age == 1) color = trailColor1;
+    else if (age == 2) color = trailColor2;
+    else if (age == 3) color = trailColor3;
 
     tft.fillRect(ringX[i] - cellSize / 2, ringY[i] - cellSize / 2, cellSize, cellSize, color);
   }
-
-  tft.drawString("Loading...", centerX, centerY + 92);
+  tft.drawString("Waiting for question...", centerX, centerY + 92);
 }
 
 void drawResultScreen(bool isCorrect) {
   const uint16_t background = isCorrect ? TFT_GREEN : TFT_RED;
-
   tft.fillScreen(background);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE, background);
@@ -218,21 +201,47 @@ void startResultScreen(bool isCorrect) {
   drawResultScreen(isCorrect);
 }
 
+// Executed whenever a packet is broadcasted from Master
+void receivedCallback(uint32_t from, String &msg) {
+  if (msg.startsWith("Q|")) {
+    masterNodeId = from; // Ensure accurate responses matching dynamic routing
+
+    String q = getValue(msg, '|', 1);
+    String a0 = getValue(msg, '|', 2);
+    String a1 = getValue(msg, '|', 3);
+    String a2 = getValue(msg, '|', 4);
+    String a3 = getValue(msg, '|', 5);
+    int correctIdx = getValue(msg, '|', 6).toInt();
+
+    setQuizContent(q, a0, a1, a2, a3, correctIdx);
+
+    showingLoadingScreen = false;
+    showingResultScreen = false;
+    selectedBox = 0;
+    drawKahootScreen();
+  }
+}
+
 void setup() {
   tft.init();
   tft.setRotation(1);
 
   Serial.begin(115200);
   pinMode(buttonPin, INPUT_PULLUP);
-  setQuizContent("When was Israel\nfounded?", "1948", "2007", "1969", "1939", 0);
-  drawKahootScreen();
+
+  mesh.init(MESH_PREFIX, MESH_PASSWORD, &userScheduler, MESH_PORT);
+  mesh.onReceive(&receivedCallback);
+
+  startLoadingScreen();
 }
 
 void loop() {
+  mesh.update(); // CRITICAL: Run background mesh framework tasks
+
   if (showingResultScreen) {
     if (millis() - resultStartTime >= resultDelay) {
       showingResultScreen = false;
-      startLoadingScreen();
+      startLoadingScreen(); // Sweeps back into parsing animations
     }
     return;
   }
@@ -240,19 +249,13 @@ void loop() {
   if (showingLoadingScreen) {
     if (millis() - loadingFrameStart >= loadingFrameDelay) {
       loadingFrameStart = millis();
-      loadingFrame = (loadingFrame + 1) % 12;
+      loadingFrame = (loadingFrame + 1) % 8;
       drawLoadingScreen();
     }
-
-    if (millis() - loadingStartTime >= loadingDelay) {
-      showingLoadingScreen = false;
-      drawKahootScreen();
-    }
-    return;
+    return; // Removed automatic timeout loop constraint
   }
 
   bool reading = digitalRead(buttonPin);
-
   if (reading != lastReading) {
     lastDebounceTime = millis();
   }
@@ -260,7 +263,6 @@ void loop() {
   if ((millis() - lastDebounceTime) > debounceDelay) {
     if (reading != buttonState) {
       buttonState = reading;
-
       if (buttonState == LOW) {
         pressStartTime = millis();
         holdReported = false;
@@ -268,26 +270,22 @@ void loop() {
         if (!holdReported && (millis() - pressStartTime) < holdDelay) {
           selectedBox = (selectedBox + 1) % 4;
           drawKahootScreen();
-
-          Serial.print("Option ");
-          Serial.print(selectedBox + 1);
-          Serial.println(" selected");
+          Serial.printf("Option %d selected\n", selectedBox + 1);
         }
-
         holdReported = false;
       }
     }
 
     if (buttonState == LOW && !holdReported && (millis() - pressStartTime) >= holdDelay) {
       holdReported = true;
+      Serial.printf("Option %d submitted to Master\n", selectedBox + 1);
 
-      Serial.print("Option ");
-      Serial.print(selectedBox + 1);
-      Serial.println(" submitted");
+      // Instantly dispatch choice structure back up to Master
+      String answerMsg = "A|" + String(selectedBox);
+      mesh.sendSingle(masterNodeId, answerMsg);
 
       startResultScreen(selectedBox == correctAnswerBox);
     }
   }
-
   lastReading = reading;
 }
