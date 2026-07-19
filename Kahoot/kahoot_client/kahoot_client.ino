@@ -121,15 +121,13 @@ void drawKahootScreen() {
 }
 
 void drawLoadingScreen() {
-  const uint16_t background = TFT_BLACK;
+  // --- CHANGED START ---
+  // Removed tft.fillScreen() and static text rendering from the loop
+  // --- CHANGED END ---
+
   const uint16_t trailColor1 = tft.color565(180, 180, 180);
   const uint16_t trailColor2 = tft.color565(120, 120, 120);
   const uint16_t trailColor3 = tft.color565(70, 70, 70);
-
-  tft.fillScreen(background);
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(TFT_WHITE, background);
-  tft.setTextSize(2);
 
   const int16_t centerX = tft.width() / 2;
   const int16_t centerY = tft.height() / 2 - 10;
@@ -154,10 +152,12 @@ void drawLoadingScreen() {
     else if (age == 1) color = trailColor1;
     else if (age == 2) color = trailColor2;
     else if (age == 3) color = trailColor3;
+    // --- CHANGED START ---
+    else color = TFT_BLACK; // Paint old squares black so they don't trail forever
+    // --- CHANGED END ---
 
     tft.fillRect(ringX[i] - cellSize / 2, ringY[i] - cellSize / 2, cellSize, cellSize, color);
   }
-  tft.drawString("Waiting for question...", centerX, centerY + 92);
 }
 
 void drawResultScreen(bool isCorrect) {
@@ -190,6 +190,20 @@ void startLoadingScreen() {
   loadingStartTime = millis();
   loadingFrameStart = 0;
   loadingFrame = 0;
+
+  // --- CHANGED START ---
+  // Wiping the screen and drawing static text happens exactly ONCE here
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextSize(2);
+
+  const int16_t centerX = tft.width() / 2;
+  const int16_t centerY = tft.height() / 2 - 10;
+  
+  tft.drawString("Waiting for question...", centerX, centerY + 92);
+  // --- CHANGED END ---
+
   drawLoadingScreen();
 }
 
