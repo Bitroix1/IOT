@@ -133,6 +133,12 @@ void processSerialQueue() {
   }
 }
 
+// Reverse lookup: mesh nodeId -> buzzerId (the monitor keys everything by buzzerId).
+int buzzerIdOfNode(uint32_t node) {
+  for (auto const& [bid, nid] : nodeOf) if (nid == node) return bid;
+  return -1;
+}
+
 void receivedCallback(uint32_t from, String &msg) {
   if (msg.startsWith("HELLO:")) {
     int id = msg.substring(6).toInt();
@@ -175,6 +181,10 @@ void receivedCallback(uint32_t from, String &msg) {
     } else {
       Serial.printf("Node %u: INCORRECT (Selected option %d)\n", from, clientSelection + 1);
     }
+
+    // Machine-readable score for the web monitor (keyed by buzzerId).
+    int bid = buzzerIdOfNode(from);
+    if (bid >= 0) Serial.printf("SCORE,%d,%d\n", bid, playerTotalScores[from]);
   }
 }
 
